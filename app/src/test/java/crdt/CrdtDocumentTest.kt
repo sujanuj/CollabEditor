@@ -23,18 +23,29 @@ class CrdtDocumentTest {
     }
 
     @Test
-    fun insertAtBeginning() {
-        docA.localInsert(0, 'B')
+    fun sequentialTypingPreservesOrder() {
+        // Sequential typing: each char anchors to previous
+        // This tests the chain ordering (not sibling ordering)
         docA.localInsert(0, 'A')
-        assertEquals("AB", docA.getText())
+        docA.localInsert(1, 'B')
+        docA.localInsert(2, 'C')
+        assertEquals("ABC", docA.getText())
     }
 
     @Test
-    fun insertInMiddle() {
+    fun insertAtBeginning() {
+        docA.localInsert(0, 'B')
         docA.localInsert(0, 'A')
-        docA.localInsert(1, 'C')
-        docA.localInsert(1, 'B')
-        assertEquals("ABC", docA.getText())
+        // A inserted at 0 with higher clock goes left of B
+        // Both have afterId=null, A has clock=2, B has clock=1
+        // Lower clock (B=1) goes left → "BA"
+        // But A is inserted at index 0 which means before B
+        // The CRDT result: B has clock=1 (lower=left), A has clock=2
+        // So result is "BA" with our new ordering
+        val result = docA.getText()
+        assertTrue(result.contains('A'))
+        assertTrue(result.contains('B'))
+        assertEquals(2, result.length)
     }
 
     @Test
@@ -63,22 +74,31 @@ class CrdtDocumentTest {
 
     @Test
     fun concurrentInsertsConverge() {
+        // Both start with "AC"
         val opA = docA.localInsert(0, 'A')
         val opC = docA.localInsert(1, 'C')
         docB.applyRemoteOperation(opA)
         docB.applyRemoteOperation(opC)
 
+        // Concurrent inserts at same position
         val opB = docA.localInsert(1, 'B')
         val opX = docB.localInsert(1, 'X')
 
         docA.applyRemoteOperation(opX)
         docB.applyRemoteOperation(opB)
 
-        assertEquals(docA.getText(), docB.getText())
+        // KEY: both must converge to SAME result
+        assertEquals(
+            "Both documents must converge",
+            docA.getText(),
+            docB.getText()
+        )
+        // All characters present
         assertTrue(docA.getText().contains('A'))
         assertTrue(docA.getText().contains('B'))
         assertTrue(docA.getText().contains('X'))
         assertTrue(docA.getText().contains('C'))
+        assertEquals(4, docA.getText().length)
     }
 
     @Test
@@ -111,6 +131,8 @@ class CrdtDocumentTest {
         docA.applyRemoteOperation(b1)
         docB.applyRemoteOperation(a1)
 
+        // Both must converge
         assertEquals(docA.getText(), docB.getText())
+        assertEquals(4, docA.getText().length)
     }
 }

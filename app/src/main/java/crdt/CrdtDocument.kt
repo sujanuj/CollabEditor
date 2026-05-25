@@ -54,7 +54,9 @@ class CrdtDocument(val siteId: String) {
             is DocumentOperation.Insert -> {
                 clock = maxOf(clock, op.clock) + 1
                 val id = CharacterId(op.siteId, op.clock)
-                if (chars.none { it.id == id }) integrate(op)
+                if (chars.none { it.id == id }) {
+                    integrate(op)
+                }
             }
             is DocumentOperation.Delete -> {
                 clock = maxOf(clock, op.clock) + 1
@@ -64,22 +66,25 @@ class CrdtDocument(val siteId: String) {
     }
 
     /**
-     * Integrate a new character into the correct position.
+     * Logoot-style CRDT integration.
      *
-     * For characters sharing the same anchor (afterId):
-     * - Sequential inserts at the same position: higher clock = inserted MORE
-     *   recently at that spot = goes to the LEFT (e.g. repeatedly pressing
-     *   insert-at-beginning pushes previous chars right)
-     * - Concurrent inserts from DIFFERENT sites: use siteId as tiebreaker
-     *   for determinism, higher siteId goes left
+     * Characters sharing the same anchor (afterId) are siblings.
+     * Among siblings, we need a deterministic total order.
      *
-     * This matches how a user actually types: each new char at position X
-     * goes immediately at X, pushing everything else right.
+     * Rule: among siblings, sort by (clock ASC, siteId ASC).
+     * Lower clock = inserted earlier = goes to the LEFT.
+     * This ensures convergence: any two devices applying the same
+     * set of operations always end up with identical ordering.
+     *
+     * Sequential typing works because each character uses the
+     * previous character as its anchor (afterId), so they form
+     * a chain — not siblings — and order is preserved naturally.
      */
     private fun integrate(op: DocumentOperation.Insert) {
         val newId = CharacterId(op.siteId, op.clock)
         val newChar = Char(id = newId, afterId = op.afterId, value = op.value)
 
+        // Find position of anchor character
         val anchorPos = if (op.afterId == null) -1
         else chars.indexOfFirst { it.id == op.afterId }
 
@@ -87,21 +92,25 @@ class CrdtDocument(val siteId: String) {
 
         while (pos < chars.size) {
             val c = chars[pos]
-            // Stop if we've left the sibling group (different anchor)
+
+            // Left the sibling group — insert here
             if (c.afterId != op.afterId) break
 
-            // Among siblings, higher clock = goes LEFT (insert before it)
-            // So we only skip (move right) if the existing char has a
-            // HIGHER clock than ours — meaning it was inserted more recently
-            // and already claimed the leftmost spot
-            if (c.id.clock > newId.clock) { pos++; continue }
-
-            // Same clock (concurrent from different sites): higher siteId goes left
-            if (c.id.clock == newId.clock && c.id.siteId > newId.siteId) {
-                pos++; continue
+            // Same anchor — use clock to determine order
+            // Lower clock = goes left (was inserted earlier)
+            if (c.id.clock < newId.clock) {
+                pos++
+                continue
             }
 
-            // Otherwise insert here (before c)
+            // Same clock = concurrent insert from different site
+            // Use siteId as deterministic tiebreaker
+            if (c.id.clock == newId.clock && c.id.siteId < newId.siteId) {
+                pos++
+                continue
+            }
+
+            // This existing char should go to our right — insert here
             break
         }
 
@@ -115,11 +124,15 @@ class CrdtDocument(val siteId: String) {
     }
 
     fun updateCursor(cursor: CursorPosition) {
-        _cursors.value = _cursors.value.toMutableMap().apply { put(cursor.siteId, cursor) }
+        _cursors.value = _cursors.value.toMutableMap().apply {
+            put(cursor.siteId, cursor)
+        }
     }
 
     fun removeCursor(siteId: String) {
-        _cursors.value = _cursors.value.toMutableMap().apply { remove(siteId) }
+        _cursors.value = _cursors.value.toMutableMap().apply {
+            remove(siteId)
+        }
     }
 
     fun getCursorVisibleIndex(cursor: CursorPosition): Int {
@@ -149,18 +162,22 @@ class CrdtDocument(val siteId: String) {
     fun getFullHistory(): List<DocumentOperation> {
         val ops = mutableListOf<DocumentOperation>()
         for (c in chars) {
-            ops.add(DocumentOperation.Insert(
-                siteId = c.id.siteId,
-                clock = c.id.clock,
-                afterId = c.afterId,
-                value = c.value
-            ))
+            ops.add(
+                DocumentOperation.Insert(
+                    siteId = c.id.siteId,
+                    clock = c.id.clock,
+                    afterId = c.afterId,
+                    value = c.value
+                )
+            )
             if (c.isDeleted) {
-                ops.add(DocumentOperation.Delete(
-                    siteId = siteId,
-                    clock = clock,
-                    targetId = c.id
-                ))
+                ops.add(
+                    DocumentOperation.Delete(
+                        siteId = c.id.siteId,
+                        clock = c.id.clock + 1,
+                        targetId = c.id
+                    )
+                )
             }
         }
         return ops
