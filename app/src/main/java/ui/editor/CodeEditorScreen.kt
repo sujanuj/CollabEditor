@@ -6,6 +6,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,17 +22,18 @@ import com.collabedit.app.sync.SyncService
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CodeEditorScreen(viewModel: EditorViewModel) {
+fun CodeEditorScreen(
+    viewModel: EditorViewModel,
+    onGitHubClick: () -> Unit = {}
+) {
     val text by viewModel.text.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val users by viewModel.users.collectAsStateWithLifecycle()
     val sessionId by viewModel.sessionId.collectAsStateWithLifecycle()
 
     var localText by remember { mutableStateOf(text) }
-    // This flag prevents us from sending remote updates back to the server
     var isApplyingRemote by remember { mutableStateOf(false) }
 
-    // When remote CRDT changes arrive, update local text without triggering a send
     LaunchedEffect(text) {
         if (localText != text) {
             isApplyingRemote = true
@@ -57,6 +59,14 @@ fun CodeEditorScreen(viewModel: EditorViewModel) {
                     }
                 },
                 actions = {
+                    // GitHub button
+                    IconButton(onClick = onGitHubClick) {
+                        Icon(
+                            imageVector = Icons.Default.AccountCircle,
+                            contentDescription = "Open from GitHub",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                     ConnectionIndicator(connectionState)
                     Spacer(modifier = Modifier.width(8.dp))
                     users.values.take(4).forEach { user ->
@@ -93,7 +103,6 @@ fun CodeEditorScreen(viewModel: EditorViewModel) {
             TextField(
                 value = localText,
                 onValueChange = { newText ->
-                    // Only process if this is a LOCAL user edit, not a remote sync
                     if (!isApplyingRemote) {
                         val oldText = localText
                         localText = newText

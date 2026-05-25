@@ -26,7 +26,6 @@ class EditorViewModel : ViewModel() {
     private val _sessionId = MutableStateFlow("")
     val sessionId: StateFlow<String> = _sessionId.asStateFlow()
 
-    // Flag to prevent processing remote updates as local edits
     private var isApplyingRemoteUpdate = false
 
     fun joinSession(sessionId: String, userName: String) {
@@ -37,29 +36,44 @@ class EditorViewModel : ViewModel() {
     }
 
     fun onTextChanged(newText: String, oldText: String) {
-        // If this change came from a remote update, ignore it
         if (isApplyingRemoteUpdate) return
-        // If lengths are equal, no structural change
         if (newText == oldText) return
 
         if (newText.length > oldText.length) {
-            // Find first difference
             var i = 0
             while (i < oldText.length && i < newText.length && oldText[i] == newText[i]) i++
-            // Insert each new character
             val insertedPart = newText.substring(i, i + (newText.length - oldText.length))
             insertedPart.forEachIndexed { offset, char ->
                 repository.onCharacterInserted(i + offset, char)
             }
         } else {
-            // Find first difference
             var i = 0
             while (i < oldText.length && i < newText.length && oldText[i] == newText[i]) i++
-            // Delete each removed character
             val deleteCount = oldText.length - newText.length
             repeat(deleteCount) {
                 repository.onCharacterDeleted(i)
             }
+        }
+    }
+
+    /**
+     * Load a file from GitHub into the editor.
+     * Clears existing content and inserts the file content.
+     * All collaborators see the file load in real time.
+     */
+    fun loadFileContent(content: String) {
+        val currentText = repository.textState.value
+
+        // Delete all existing characters from the end backwards
+        if (currentText.isNotEmpty()) {
+            repeat(currentText.length) {
+                repository.onCharacterDeleted(0)
+            }
+        }
+
+        // Insert the file content character by character
+        content.forEachIndexed { index, char ->
+            repository.onCharacterInserted(index, char)
         }
     }
 

@@ -2,6 +2,8 @@ package com.collabedit.app.ui.editor
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -12,7 +14,8 @@ import androidx.compose.ui.unit.sp
 
 @Composable
 fun SessionScreen(
-    onJoinSession: (sessionId: String, userName: String) -> Unit
+    onJoinSession: (sessionId: String, userName: String) -> Unit,
+    onGitHubClick: () -> Unit = {}
 ) {
     var userName by remember { mutableStateOf("") }
     var sessionId by remember { mutableStateOf("") }
@@ -97,6 +100,24 @@ fun SessionScreen(
             shape = RoundedCornerShape(12.dp)
         ) {
             Text("Create New Session", fontSize = 16.sp)
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedButton(
+            onClick = onGitHubClick,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.AccountCircle,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("Open from GitHub", fontSize = 16.sp)
         }
     }
 }
