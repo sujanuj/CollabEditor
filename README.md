@@ -231,10 +231,10 @@ cd server
 | Phase | Description | Status |
 |---|---|---|
 | 1 | CRDT engine + unit tests |  Complete |
-| 2 | Ktor WebSocket sync server |  In progress |
-| 3 | Android sync client |  Planned |
-| 4 | Jetpack Compose editor UI |  Planned |
-| 5 | GitHub OAuth integration |  Planned |
+| 2 | Ktor WebSocket sync server |  Complete |
+| 3 | Android sync client |  Complete |
+| 4 | Jetpack Compose editor UI |  Complete |
+| 5 | GitHub OAuth integration |  In progress |
 | 6 | AI code suggestions (Claude API) |  Planned |
 
 ---
