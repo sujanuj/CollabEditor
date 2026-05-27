@@ -53,25 +53,26 @@ CollabEditor/
 │   ├── sync/                          ← Network layer
 │   │   ├── SyncService.kt             ← Ktor WebSocket client
 │   │   ├── PresenceManager.kt         ← Real-time cursor broadcast
-│   │   └── OfflineQueue.kt            ← Op queue, survives process death
+│   │   └── EditorRepository.kt        ← Single source of truth
 │   │
-│   ├── data/                          ← Persistence layer
-│   │   ├── OperationLog.kt            ← Room database for local op history
-│   │   └── DocumentRepository.kt      ← Single source of truth
+│   ├── github/                        ← GitHub integration
+│   │   ├── GitHubAuthManager.kt       ← OAuth 2.0 flow
+│   │   ├── GitHubRepository.kt        ← REST API client
+│   │   └── GitHubScreen.kt            ← File browser UI
+│   │
+│   ├── ai/                            ← AI suggestions
+│   │   └── AiCompletionService.kt     ← Claude API integration
 │   │
 │   └── ui/                            ← Jetpack Compose screens
-│       ├── editor/
-│       │   ├── CodeEditorScreen.kt    ← Main editor with syntax highlighting
-│       │   ├── EditorViewModel.kt     ← State + Flow management
-│       │   └── CursorOverlay.kt       ← Animated remote cursors
-│       └── session/
+│       └── editor/
+│           ├── CodeEditorScreen.kt    ← Main editor UI
+│           ├── EditorViewModel.kt     ← State + Flow management
 │           └── SessionScreen.kt       ← Create/join sessions
 │
-└── server/                            ← Ktor backend (separate module)
+└── server/                            ← Ktor backend (separate repo)
     ├── Application.kt                 ← Entry point
     ├── SessionManager.kt              ← Active session tracking
-    ├── SyncRoutes.kt                  ← WebSocket route handlers
-    └── PresenceBroadcaster.kt         ← Fan-out cursor positions
+    └── Routes.kt                      ← WebSocket route handlers
 ```
 
 ---
@@ -102,11 +103,9 @@ private fun integrate(op: DocumentOperation.Insert) {
 
     while (pos < chars.size) {
         val c = chars[pos]
-        if (c.afterId != op.afterId) break          // left the sibling group
-        if (c.id.clock > newId.clock) { pos++; continue }  // higher clock = goes left
-        if (c.id.clock == newId.clock && c.id.siteId > newId.siteId) {
-            pos++; continue                         // tiebreaker: higher siteId = left
-        }
+        if (c.afterId != op.afterId) break
+        if (c.id.clock < newId.clock) { pos++; continue }
+        if (c.id.clock == newId.clock && c.id.siteId < newId.siteId) { pos++; continue }
         break
     }
     chars.add(pos, newChar)
@@ -127,18 +126,6 @@ When a device reconnects after being offline:
 3. The client replays those operations through the CRDT engine
 4. Because the CRDT is commutative and idempotent, the result is always correct
 
-```kotlin
-// VectorClock.kt
-fun missingOpsForServer(
-    serverClock: Map<String, Long>,
-    allLocalOps: List<DocumentOperation>
-): List<DocumentOperation> {
-    return allLocalOps
-        .filter { op -> op.clock > (serverClock[op.siteId] ?: 0L) }
-        .sortedBy { it.clock }   // replay in causal order
-}
-```
-
 ---
 
 ## Tech stack
@@ -148,12 +135,11 @@ fun missingOpsForServer(
 | Language | Kotlin | Null safety, coroutines, sealed classes |
 | UI | Jetpack Compose + Material 3 | Declarative, reactive, modern Android |
 | Real-time sync | Ktor WebSockets | Lightweight, Kotlin-native |
-| Offline storage | Room | Structured local op log with type safety |
-| Dependency injection | Hilt | Compile-time verified DI graph |
 | Async | Kotlin Coroutines + Flow | Structured concurrency, no callback hell |
+| Dependency injection | Hilt | Compile-time verified DI graph |
 | Sync algorithm | Sequence CRDT (Logoot-inspired) | No central sequencer, provably convergent |
-| AI suggestions | Anthropic Claude API | Context-aware inline completions |
-| VCS integration | GitHub REST API + OAuth | Pull/push files directly from the app |
+| AI suggestions | Anthropic Claude API (claude-sonnet-4-5) | Context-aware inline completions |
+| VCS integration | GitHub REST API + OAuth 2.0 | Pull/push files directly from the app |
 
 ---
 
@@ -189,10 +175,30 @@ BUILD SUCCESSFUL in 2s
 
 ---
 
+## Key engineering decisions
+
+**Why CRDT over Operational Transformation?**
+OT requires a central server to sequence concurrent operations — every edit must round-trip
+to the server before being applied. CRDT convergence is a mathematical property of the data
+structure itself, so edits can be applied locally and merged later without coordination.
+
+**Why Logoot-style over RGA (Replicated Growable Array)?**
+Logoot assigns fractional position identifiers to characters, making it straightforward to
+implement the sibling-ordering rule using just a Lamport clock and siteId. RGA uses a
+linked list approach that requires more complex tombstone management.
+
+**Why Ktor over Firebase?**
+Firebase would have hidden all the interesting distributed systems work behind a library.
+Building the sync layer with Ktor WebSockets required explicit design of the session
+protocol, history replay, and vector clock exchange — exactly the kind of work that
+matters at companies like Microsoft and Apple.
+
+---
+
 ## What I would change at scale
 
 This is designed as a portfolio project running on a single Ktor server.
-In a production system at Microsoft or Apple scale, I would:
+In a production system at Microsoft or Apple scale:
 
 1. **Shard sessions by document ID** across multiple server nodes using consistent hashing
 2. **Add a persistent message bus** (Kafka) between shards to guarantee op delivery with at-least-once semantics
@@ -206,22 +212,22 @@ The client-side CRDT merge logic would require zero changes — that's the elega
 
 ## Build and run
 
-**Prerequisites:** Android Studio Panda (2025.3.x), JDK 17, macOS with Xcode
+**Prerequisites:** Android Studio Panda (2025.3.x), JDK 17
 
 ```bash
-# Clone
+# Clone both repos
 git clone https://github.com/sujanuj/CollabEditor
-cd CollabEditor
+git clone https://github.com/sujanuj/CollabEditorServer
 
-# Run unit tests
-./gradlew test
-
-# Install on emulator or device
-./gradlew installDebug
-
-# Start the sync server (separate terminal)
-cd server
+# Terminal 1 — start the sync server
+cd CollabEditorServer
 ./gradlew run
+
+# Terminal 2 — verify server is up
+curl http://localhost:8080/health
+
+# Android Studio — open CollabEditor, press Run
+# Use the same Session ID on both emulators to collaborate
 ```
 
 ---
@@ -230,12 +236,12 @@ cd server
 
 | Phase | Description | Status |
 |---|---|---|
-| 1 | CRDT engine + unit tests |  Complete |
+| 1 | CRDT engine + 10 unit tests |  Complete |
 | 2 | Ktor WebSocket sync server |  Complete |
-| 3 | Android sync client |  Complete |
+| 3 | Android WebSocket sync client |  Complete |
 | 4 | Jetpack Compose editor UI |  Complete |
-| 5 | GitHub OAuth integration |  In progress |
-| 6 | AI code suggestions (Claude API) |  Planned |
+| 5 | GitHub OAuth + file browser |  Complete |
+| 6 | AI code suggestions (Claude API) |  Complete |
 
 ---
 
@@ -247,3 +253,6 @@ MS Software Engineering — Arizona State University
 Built as a portfolio project targeting engineering roles at Microsoft, Apple, Amazon, and Tesla.
 Designed to demonstrate distributed systems depth, Kotlin expertise, and mobile architecture
 judgment beyond what typical Android portfolio projects show.
+
+- Android app: [github.com/sujanuj/CollabEditor](https://github.com/sujanuj/CollabEditor)
+- Sync server: [github.com/sujanuj/CollabEditorServer](https://github.com/sujanuj/CollabEditorServer)
