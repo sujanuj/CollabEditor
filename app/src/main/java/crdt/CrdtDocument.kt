@@ -20,9 +20,6 @@ class CrdtDocument(val siteId: String) {
     private val _textState = MutableStateFlow("")
     val textState: StateFlow<String> = _textState.asStateFlow()
 
-    // Incremented every time a remote operation updates the document.
-    // Local inserts/deletes do NOT increment this.
-    // The UI observes this to know when to ignore onValueChange calls.
     private val _remoteOpCount = MutableStateFlow(0L)
     val remoteOpCount: StateFlow<Long> = _remoteOpCount.asStateFlow()
 
@@ -70,17 +67,11 @@ class CrdtDocument(val siteId: String) {
                 applyDelete(op)
             }
         }
-        // Increment remote counter after every remote op
-        // (suppressed during batch — incremented once at end of batch instead)
         if (!suppressTextUpdates) {
             _remoteOpCount.value++
         }
     }
 
-    /**
-     * Apply a batch of operations suppressing intermediate textState
-     * and remoteOpCount emissions. Both emit exactly once after all ops.
-     */
     fun applyRemoteOperationsBatch(ops: List<DocumentOperation>) {
         if (ops.isEmpty()) return
         suppressTextUpdates = true
@@ -91,7 +82,7 @@ class CrdtDocument(val siteId: String) {
         } finally {
             suppressTextUpdates = false
             updateText()
-            _remoteOpCount.value++ // single increment for the whole batch
+            _remoteOpCount.value++
         }
     }
 
@@ -100,7 +91,12 @@ class CrdtDocument(val siteId: String) {
         val newChar = Char(id = newId, afterId = op.afterId, value = op.value)
 
         val anchorPos = if (op.afterId == null) -1
-        else chars.indexOfFirst { it.id == op.afterId }
+        else chars.indexOfFirst { it.id == op.afterId }.also { idx ->
+            if (idx == -1) {
+                android.util.Log.e("CRDT", "ANCHOR NOT FOUND: afterId=${op.afterId} for char='${op.value}' from site=${op.siteId} clock=${op.clock}")
+                android.util.Log.e("CRDT", "chars has ${chars.size} entries, first 8: ${chars.take(8).map { "${it.id.siteId.take(4)}:${it.id.clock}" }}")
+            }
+        }
 
         var pos = anchorPos + 1
 

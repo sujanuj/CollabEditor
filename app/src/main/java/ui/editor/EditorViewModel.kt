@@ -9,6 +9,7 @@ import com.collabedit.app.sync.SyncService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 class EditorViewModel : ViewModel() {
 
@@ -16,12 +17,7 @@ class EditorViewModel : ViewModel() {
     private val aiService = AiCompletionService(viewModelScope)
 
     val text: StateFlow<String> = repository.textState
-
-    // Exposes the CRDT's remote op counter directly to the UI.
-    // Every time a remote operation arrives, this increments.
-    // The UI uses it to distinguish remote updates from user keystrokes.
     val remoteOpCount: StateFlow<Long> = repository.remoteOpCount
-
     val connectionState: StateFlow<SyncService.ConnectionState> = repository.connectionState
     val users: StateFlow<Map<String, PresenceManager.UserPresence>> = repository.users
 
@@ -49,9 +45,8 @@ class EditorViewModel : ViewModel() {
         _sessionJoined.value = true
     }
 
-    fun onTextChanged(newText: String, oldText: String) {
+    fun onTextChanged(newText: String, oldText: String, cursorPosition: Int = currentCursorPosition) {
         if (newText == oldText) return
-        if (newText == repository.textState.value) return
 
         if (newText.length > oldText.length) {
             var i = 0
@@ -60,13 +55,15 @@ class EditorViewModel : ViewModel() {
             insertedPart.forEachIndexed { offset, char ->
                 repository.onCharacterInserted(i + offset, char)
             }
-            currentCursorPosition = i + insertedPart.length
+            currentCursorPosition = cursorPosition
         } else {
             var i = 0
             while (i < oldText.length && i < newText.length && oldText[i] == newText[i]) i++
             val deleteCount = oldText.length - newText.length
-            repeat(deleteCount) { repository.onCharacterDeleted(i) }
-            currentCursorPosition = i
+            repeat(deleteCount) {
+                repository.onCharacterDeleted(i)
+            }
+            currentCursorPosition = cursorPosition
         }
 
         if (_aiEnabled.value) {

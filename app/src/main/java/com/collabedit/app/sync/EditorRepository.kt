@@ -38,9 +38,8 @@ class EditorRepository(private val scope: CoroutineScope) {
                         presenceManager.userLeft(event.siteId)
                         Log.d(TAG, "${event.siteId} left")
                     }
-                    is SyncService.SyncEvent.HistoryReceived -> {
+                    is SyncService.SyncEvent.HistoryReceived ->
                         Log.d(TAG, "History received: ${event.operationCount} ops")
-                    }
                     is SyncService.SyncEvent.Connected -> Log.d(TAG, "Connected to server")
                     is SyncService.SyncEvent.Disconnected -> Log.d(TAG, "Disconnected from server")
                     is SyncService.SyncEvent.Error -> Log.e(TAG, "Sync error: ${event.message}")
@@ -56,6 +55,8 @@ class EditorRepository(private val scope: CoroutineScope) {
         Log.d(TAG, "Joining session $sessionId as $userName ($siteId)")
     }
 
+    // localInsert runs synchronously on whatever thread calls this (main thread).
+    // sendInsert is dispatched to IO separately.
     fun onCharacterInserted(index: Int, char: Char) {
         val op = document.localInsert(index, char)
         scope.launch(Dispatchers.IO) { syncService.sendInsert(op) }

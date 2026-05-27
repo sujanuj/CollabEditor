@@ -99,7 +99,14 @@ class SyncService(
 
                 for (frame in incoming) {
                     if (frame !is Frame.Text) continue
-                    handleIncomingMessage(frame.readText(), siteId)
+                    // Read text on IO thread, apply on Main thread.
+                    // This ensures remote ops and local inserts (which run on Main
+                    // via onTextChanged → onCharacterInserted) are serialized on
+                    // the same thread — eliminating the data race on CrdtDocument.chars.
+                    val text = frame.readText()
+                    withContext(Dispatchers.Main) {
+                        handleIncomingMessage(text, siteId)
+                    }
                 }
             }
         } finally {
@@ -114,11 +121,6 @@ class SyncService(
             when (val type = json.get("type")?.asString) {
 
                 "HISTORY" -> {
-                    // Collect all ops first, then apply as a batch.
-                    // applyRemoteOperationsBatch() suppresses intermediate
-                    // textState emissions so the UI only sees one update
-                    // after all history is loaded — preventing the joining
-                    // device from re-sending history as local inserts.
                     val operations = json.getAsJsonArray("operations")
                     val ops = mutableListOf<DocumentOperation>()
                     operations?.forEach { element ->
@@ -132,7 +134,6 @@ class SyncService(
                 }
 
                 "INSERT", "DELETE" -> {
-                    // Single ops during live editing — apply individually
                     val op = OperationSerializer.deserialize(rawMessage)
                     if (op != null) document.applyRemoteOperation(op)
                 }
@@ -160,7 +161,6 @@ class SyncService(
                 }
 
                 "SYNC_RESPONSE" -> {
-                    // Also batch apply sync responses
                     val ops = mutableListOf<DocumentOperation>()
                     json.getAsJsonArray("operations")?.forEach { element ->
                         val op = OperationSerializer.deserialize(element.asString)
