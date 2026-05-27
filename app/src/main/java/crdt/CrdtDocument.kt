@@ -15,9 +15,16 @@ class CrdtDocument(val siteId: String) {
 
     private val chars = mutableListOf<Char>()
     private var clock = 0L
+    private var suppressTextUpdates = false
 
     private val _textState = MutableStateFlow("")
     val textState: StateFlow<String> = _textState.asStateFlow()
+
+    // Incremented every time a remote operation updates the document.
+    // Local inserts/deletes do NOT increment this.
+    // The UI observes this to know when to ignore onValueChange calls.
+    private val _remoteOpCount = MutableStateFlow(0L)
+    val remoteOpCount: StateFlow<Long> = _remoteOpCount.asStateFlow()
 
     private val _cursors = MutableStateFlow<Map<String, CursorPosition>>(emptyMap())
     val cursors: StateFlow<Map<String, CursorPosition>> = _cursors.asStateFlow()
@@ -63,28 +70,35 @@ class CrdtDocument(val siteId: String) {
                 applyDelete(op)
             }
         }
+        // Increment remote counter after every remote op
+        // (suppressed during batch — incremented once at end of batch instead)
+        if (!suppressTextUpdates) {
+            _remoteOpCount.value++
+        }
     }
 
     /**
-     * Logoot-style CRDT integration.
-     *
-     * Characters sharing the same anchor (afterId) are siblings.
-     * Among siblings, we need a deterministic total order.
-     *
-     * Rule: among siblings, sort by (clock ASC, siteId ASC).
-     * Lower clock = inserted earlier = goes to the LEFT.
-     * This ensures convergence: any two devices applying the same
-     * set of operations always end up with identical ordering.
-     *
-     * Sequential typing works because each character uses the
-     * previous character as its anchor (afterId), so they form
-     * a chain — not siblings — and order is preserved naturally.
+     * Apply a batch of operations suppressing intermediate textState
+     * and remoteOpCount emissions. Both emit exactly once after all ops.
      */
+    fun applyRemoteOperationsBatch(ops: List<DocumentOperation>) {
+        if (ops.isEmpty()) return
+        suppressTextUpdates = true
+        try {
+            for (op in ops) {
+                applyRemoteOperation(op)
+            }
+        } finally {
+            suppressTextUpdates = false
+            updateText()
+            _remoteOpCount.value++ // single increment for the whole batch
+        }
+    }
+
     private fun integrate(op: DocumentOperation.Insert) {
         val newId = CharacterId(op.siteId, op.clock)
         val newChar = Char(id = newId, afterId = op.afterId, value = op.value)
 
-        // Find position of anchor character
         val anchorPos = if (op.afterId == null) -1
         else chars.indexOfFirst { it.id == op.afterId }
 
@@ -92,25 +106,9 @@ class CrdtDocument(val siteId: String) {
 
         while (pos < chars.size) {
             val c = chars[pos]
-
-            // Left the sibling group — insert here
             if (c.afterId != op.afterId) break
-
-            // Same anchor — use clock to determine order
-            // Lower clock = goes left (was inserted earlier)
-            if (c.id.clock < newId.clock) {
-                pos++
-                continue
-            }
-
-            // Same clock = concurrent insert from different site
-            // Use siteId as deterministic tiebreaker
-            if (c.id.clock == newId.clock && c.id.siteId < newId.siteId) {
-                pos++
-                continue
-            }
-
-            // This existing char should go to our right — insert here
+            if (c.id.clock < newId.clock) { pos++; continue }
+            if (c.id.clock == newId.clock && c.id.siteId < newId.siteId) { pos++; continue }
             break
         }
 
@@ -145,6 +143,7 @@ class CrdtDocument(val siteId: String) {
     private fun getVisible() = chars.filter { !it.isDeleted }
 
     private fun updateText() {
+        if (suppressTextUpdates) return
         _textState.value = getVisible().map { it.value }.joinToString("")
     }
 
@@ -162,22 +161,18 @@ class CrdtDocument(val siteId: String) {
     fun getFullHistory(): List<DocumentOperation> {
         val ops = mutableListOf<DocumentOperation>()
         for (c in chars) {
-            ops.add(
-                DocumentOperation.Insert(
-                    siteId = c.id.siteId,
-                    clock = c.id.clock,
-                    afterId = c.afterId,
-                    value = c.value
-                )
-            )
+            ops.add(DocumentOperation.Insert(
+                siteId = c.id.siteId,
+                clock = c.id.clock,
+                afterId = c.afterId,
+                value = c.value
+            ))
             if (c.isDeleted) {
-                ops.add(
-                    DocumentOperation.Delete(
-                        siteId = c.id.siteId,
-                        clock = c.id.clock + 1,
-                        targetId = c.id
-                    )
-                )
+                ops.add(DocumentOperation.Delete(
+                    siteId = c.id.siteId,
+                    clock = c.id.clock + 1,
+                    targetId = c.id
+                ))
             }
         }
         return ops

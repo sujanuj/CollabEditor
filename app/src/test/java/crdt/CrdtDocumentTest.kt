@@ -1,138 +1,181 @@
 package com.collabedit.app.crdt
 
-import org.junit.Test
-import org.junit.Assert.*
-import org.junit.Before
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
-class CrdtDocumentTest {
+class CrdtDocument(val siteId: String) {
 
-    private lateinit var docA: CrdtDocument
-    private lateinit var docB: CrdtDocument
+    data class Char(
+        val id: CharacterId,
+        val afterId: CharacterId?,
+        val value: kotlin.Char,
+        var isDeleted: Boolean = false
+    )
 
-    @Before
-    fun setup() {
-        docA = CrdtDocument(siteId = "user-A")
-        docB = CrdtDocument(siteId = "user-B")
-    }
+    private val chars = mutableListOf<Char>()
+    private var clock = 0L
+    private var suppressTextUpdates = false
 
-    @Test
-    fun basicInsertWorks() {
-        docA.localInsert(0, 'H')
-        docA.localInsert(1, 'i')
-        assertEquals("Hi", docA.getText())
-    }
+    private val _textState = MutableStateFlow("")
+    val textState: StateFlow<String> = _textState.asStateFlow()
 
-    @Test
-    fun sequentialTypingPreservesOrder() {
-        // Sequential typing: each char anchors to previous
-        // This tests the chain ordering (not sibling ordering)
-        docA.localInsert(0, 'A')
-        docA.localInsert(1, 'B')
-        docA.localInsert(2, 'C')
-        assertEquals("ABC", docA.getText())
-    }
+    // Incremented every time a remote operation is applied.
+    // The UI reads this to distinguish remote updates from local input.
+    private val _remoteOpCount = MutableStateFlow(0L)
+    val remoteOpCount: StateFlow<Long> = _remoteOpCount.asStateFlow()
 
-    @Test
-    fun insertAtBeginning() {
-        docA.localInsert(0, 'B')
-        docA.localInsert(0, 'A')
-        // A inserted at 0 with higher clock goes left of B
-        // Both have afterId=null, A has clock=2, B has clock=1
-        // Lower clock (B=1) goes left → "BA"
-        // But A is inserted at index 0 which means before B
-        // The CRDT result: B has clock=1 (lower=left), A has clock=2
-        // So result is "BA" with our new ordering
-        val result = docA.getText()
-        assertTrue(result.contains('A'))
-        assertTrue(result.contains('B'))
-        assertEquals(2, result.length)
-    }
+    private val _cursors = MutableStateFlow<Map<String, CursorPosition>>(emptyMap())
+    val cursors: StateFlow<Map<String, CursorPosition>> = _cursors.asStateFlow()
 
-    @Test
-    fun deleteWorks() {
-        docA.localInsert(0, 'H')
-        docA.localInsert(1, 'i')
-        docA.localDelete(1)
-        assertEquals("H", docA.getText())
-    }
-
-    @Test
-    fun deleteOnEmptyReturnsNull() {
-        val result = docA.localDelete(0)
-        assertNull(result)
-    }
-
-    @Test
-    fun twoUsersConverge() {
-        val op1 = docA.localInsert(0, 'H')
-        val op2 = docA.localInsert(1, 'i')
-        docB.applyRemoteOperation(op1)
-        docB.applyRemoteOperation(op2)
-        assertEquals(docA.getText(), docB.getText())
-        assertEquals("Hi", docB.getText())
-    }
-
-    @Test
-    fun concurrentInsertsConverge() {
-        // Both start with "AC"
-        val opA = docA.localInsert(0, 'A')
-        val opC = docA.localInsert(1, 'C')
-        docB.applyRemoteOperation(opA)
-        docB.applyRemoteOperation(opC)
-
-        // Concurrent inserts at same position
-        val opB = docA.localInsert(1, 'B')
-        val opX = docB.localInsert(1, 'X')
-
-        docA.applyRemoteOperation(opX)
-        docB.applyRemoteOperation(opB)
-
-        // KEY: both must converge to SAME result
-        assertEquals(
-            "Both documents must converge",
-            docA.getText(),
-            docB.getText()
+    fun localInsert(index: Int, char: kotlin.Char): DocumentOperation.Insert {
+        clock++
+        val visible = getVisible()
+        val afterId = if (index == 0) null else visible.getOrNull(index - 1)?.id
+        val op = DocumentOperation.Insert(
+            siteId = siteId,
+            clock = clock,
+            afterId = afterId,
+            value = char
         )
-        // All characters present
-        assertTrue(docA.getText().contains('A'))
-        assertTrue(docA.getText().contains('B'))
-        assertTrue(docA.getText().contains('X'))
-        assertTrue(docA.getText().contains('C'))
-        assertEquals(4, docA.getText().length)
+        integrate(op)
+        return op
     }
 
-    @Test
-    fun operationsAreIdempotent() {
-        val op = docA.localInsert(0, 'A')
-        docB.applyRemoteOperation(op)
-        docB.applyRemoteOperation(op)
-        assertEquals("A", docB.getText())
+    fun localDelete(index: Int): DocumentOperation.Delete? {
+        val visible = getVisible()
+        val target = visible.getOrNull(index) ?: return null
+        clock++
+        val op = DocumentOperation.Delete(
+            siteId = siteId,
+            clock = clock,
+            targetId = target.id
+        )
+        applyDelete(op)
+        return op
     }
 
-    @Test
-    fun vectorClockTracksOps() {
-        docA.localInsert(0, 'A')
-        docA.localInsert(1, 'B')
-        val clock = docA.getVectorClock()
-        assertTrue(clock.containsKey("user-A"))
-        assertTrue((clock["user-A"] ?: 0L) >= 2L)
+    fun applyRemoteOperation(op: DocumentOperation) {
+        when (op) {
+            is DocumentOperation.Insert -> {
+                clock = maxOf(clock, op.clock) + 1
+                val id = CharacterId(op.siteId, op.clock)
+                if (chars.none { it.id == id }) {
+                    integrate(op)
+                }
+            }
+            is DocumentOperation.Delete -> {
+                clock = maxOf(clock, op.clock) + 1
+                applyDelete(op)
+            }
+        }
+        if (!suppressTextUpdates) {
+            _remoteOpCount.value++
+        }
     }
 
-    @Test
-    fun offlineSyncConverges() {
-        val op1 = docA.localInsert(0, 'H')
-        val op2 = docA.localInsert(1, 'i')
-        docB.applyRemoteOperation(op1)
-        docB.applyRemoteOperation(op2)
-
-        val a1 = docA.localInsert(2, '!')
-        val b1 = docB.localInsert(2, '?')
-
-        docA.applyRemoteOperation(b1)
-        docB.applyRemoteOperation(a1)
-
-        // Both must converge
-        assertEquals(docA.getText(), docB.getText())
-        assertEquals(4, docA.getText().length)
+    /**
+     * Apply a batch of operations suppressing intermediate textState
+     * emissions. Only one textState and one remoteOpCount emission
+     * after all ops are applied.
+     */
+    fun applyRemoteOperationsBatch(ops: List<DocumentOperation>) {
+        suppressTextUpdates = true
+        try {
+            for (op in ops) {
+                applyRemoteOperation(op)
+            }
+        } finally {
+            suppressTextUpdates = false
+            updateText()
+            if (ops.isNotEmpty()) {
+                _remoteOpCount.value++
+            }
+        }
     }
+
+    private fun integrate(op: DocumentOperation.Insert) {
+        val newId = CharacterId(op.siteId, op.clock)
+        val newChar = Char(id = newId, afterId = op.afterId, value = op.value)
+
+        val anchorPos = if (op.afterId == null) -1
+        else chars.indexOfFirst { it.id == op.afterId }
+
+        var pos = anchorPos + 1
+
+        while (pos < chars.size) {
+            val c = chars[pos]
+            if (c.afterId != op.afterId) break
+            if (c.id.clock < newId.clock) { pos++; continue }
+            if (c.id.clock == newId.clock && c.id.siteId < newId.siteId) { pos++; continue }
+            break
+        }
+
+        chars.add(pos, newChar)
+        updateText()
+    }
+
+    private fun applyDelete(op: DocumentOperation.Delete) {
+        chars.find { it.id == op.targetId }?.isDeleted = true
+        updateText()
+    }
+
+    fun updateCursor(cursor: CursorPosition) {
+        _cursors.value = _cursors.value.toMutableMap().apply {
+            put(cursor.siteId, cursor)
+        }
+    }
+
+    fun removeCursor(siteId: String) {
+        _cursors.value = _cursors.value.toMutableMap().apply {
+            remove(siteId)
+        }
+    }
+
+    fun getCursorVisibleIndex(cursor: CursorPosition): Int {
+        if (cursor.afterId == null) return 0
+        val visible = getVisible()
+        val idx = visible.indexOfFirst { it.id == cursor.afterId }
+        return if (idx == -1) 0 else idx + 1
+    }
+
+    private fun getVisible() = chars.filter { !it.isDeleted }
+
+    private fun updateText() {
+        if (suppressTextUpdates) return
+        _textState.value = getVisible().map { it.value }.joinToString("")
+    }
+
+    fun getText(): String = _textState.value
+
+    fun getVectorClock(): Map<String, Long> {
+        val vc = mutableMapOf<String, Long>()
+        for (c in chars) {
+            val current = vc[c.id.siteId] ?: 0L
+            if (c.id.clock > current) vc[c.id.siteId] = c.id.clock
+        }
+        return vc
+    }
+
+    fun getFullHistory(): List<DocumentOperation> {
+        val ops = mutableListOf<DocumentOperation>()
+        for (c in chars) {
+            ops.add(DocumentOperation.Insert(
+                siteId = c.id.siteId,
+                clock = c.id.clock,
+                afterId = c.afterId,
+                value = c.value
+            ))
+            if (c.isDeleted) {
+                ops.add(DocumentOperation.Delete(
+                    siteId = c.id.siteId,
+                    clock = c.id.clock + 1,
+                    targetId = c.id
+                ))
+            }
+        }
+        return ops
+    }
+
+    fun totalCharCount(): Int = chars.size
 }

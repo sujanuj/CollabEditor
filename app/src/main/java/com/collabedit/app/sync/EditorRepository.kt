@@ -19,6 +19,7 @@ class EditorRepository(private val scope: CoroutineScope) {
     private val syncService = SyncService(document)
 
     val textState: StateFlow<String> = document.textState
+    val remoteOpCount: StateFlow<Long> = document.remoteOpCount
     val cursors = document.cursors
     val connectionState = syncService.connectionState
     val users = presenceManager.users
@@ -28,13 +29,8 @@ class EditorRepository(private val scope: CoroutineScope) {
             syncService.events.collect { event ->
                 when (event) {
                     is SyncService.SyncEvent.UserJoined -> {
-                        // Only add if it's NOT ourselves (we add ourselves in joinSession)
                         if (event.siteId != siteId) {
-                            presenceManager.userJoined(
-                                event.siteId,
-                                event.userName,
-                                event.userColor
-                            )
+                            presenceManager.userJoined(event.siteId, event.userName, event.userColor)
                             Log.d(TAG, "${event.userName} joined")
                         }
                     }
@@ -45,15 +41,9 @@ class EditorRepository(private val scope: CoroutineScope) {
                     is SyncService.SyncEvent.HistoryReceived -> {
                         Log.d(TAG, "History received: ${event.operationCount} ops")
                     }
-                    is SyncService.SyncEvent.Connected -> {
-                        Log.d(TAG, "Connected to server")
-                    }
-                    is SyncService.SyncEvent.Disconnected -> {
-                        Log.d(TAG, "Disconnected from server")
-                    }
-                    is SyncService.SyncEvent.Error -> {
-                        Log.e(TAG, "Sync error: ${event.message}")
-                    }
+                    is SyncService.SyncEvent.Connected -> Log.d(TAG, "Connected to server")
+                    is SyncService.SyncEvent.Disconnected -> Log.d(TAG, "Disconnected from server")
+                    is SyncService.SyncEvent.Error -> Log.e(TAG, "Sync error: ${event.message}")
                 }
             }
         }
@@ -61,7 +51,6 @@ class EditorRepository(private val scope: CoroutineScope) {
 
     fun joinSession(sessionId: String, userName: String) {
         val userColor = PresenceManager.colorForIndex(presenceManager.activeUsers().size)
-        // Add ourselves immediately so we show up in the user list right away
         presenceManager.userJoined(siteId, userName, userColor)
         syncService.connect(sessionId, siteId, userName, userColor)
         Log.d(TAG, "Joining session $sessionId as $userName ($siteId)")

@@ -114,21 +114,25 @@ class SyncService(
             when (val type = json.get("type")?.asString) {
 
                 "HISTORY" -> {
+                    // Collect all ops first, then apply as a batch.
+                    // applyRemoteOperationsBatch() suppresses intermediate
+                    // textState emissions so the UI only sees one update
+                    // after all history is loaded — preventing the joining
+                    // device from re-sending history as local inserts.
                     val operations = json.getAsJsonArray("operations")
-                    var count = 0
+                    val ops = mutableListOf<DocumentOperation>()
                     operations?.forEach { element ->
                         val op = OperationSerializer.deserialize(element.asString)
-                        if (op != null) {
-                            document.applyRemoteOperation(op)
-                            count++
-                        }
+                        if (op != null) ops.add(op)
                     }
+                    document.applyRemoteOperationsBatch(ops)
                     val clientCount = json.get("clientCount")?.asInt ?: 0
-                    Log.d(TAG, "History: $count ops applied. Session has $clientCount client(s)")
-                    _events.emit(SyncEvent.HistoryReceived(count))
+                    Log.d(TAG, "History: ${ops.size} ops applied. Session has $clientCount client(s)")
+                    _events.emit(SyncEvent.HistoryReceived(ops.size))
                 }
 
                 "INSERT", "DELETE" -> {
+                    // Single ops during live editing — apply individually
                     val op = OperationSerializer.deserialize(rawMessage)
                     if (op != null) document.applyRemoteOperation(op)
                 }
@@ -142,7 +146,6 @@ class SyncService(
                     val joinedSiteId = json.get("siteId").asString
                     val joinedUserName = json.get("userName").asString
                     val joinedUserColor = json.get("userColor").asString
-                    // Only emit if it's someone else joining — we already added ourselves locally
                     if (joinedSiteId != mySiteId) {
                         Log.d(TAG, "Remote user joined: $joinedUserName ($joinedSiteId)")
                         _events.emit(SyncEvent.UserJoined(joinedSiteId, joinedUserName, joinedUserColor))
@@ -157,10 +160,13 @@ class SyncService(
                 }
 
                 "SYNC_RESPONSE" -> {
+                    // Also batch apply sync responses
+                    val ops = mutableListOf<DocumentOperation>()
                     json.getAsJsonArray("operations")?.forEach { element ->
                         val op = OperationSerializer.deserialize(element.asString)
-                        if (op != null) document.applyRemoteOperation(op)
+                        if (op != null) ops.add(op)
                     }
+                    document.applyRemoteOperationsBatch(ops)
                 }
 
                 else -> Log.w(TAG, "Unknown message type: $type")
